@@ -4,10 +4,10 @@ compatibility_date = "2026-01-19"
 
 [vars]
 ALLOWED_ORIGIN = "https://aistylemate.ru"
-DEFAULT_MODEL = "gpt_image_latest"
+DEFAULT_MODEL = "gpt-4.1-mini"
 MAX_FILE_MB = "4"
 OUTFIT_SIZE = "1024x1024"
-IMAGE_MODEL = "gpt-image-1"
+IMAGE_MODEL = "gpt_image_latest"
 REGRU_STORE_URL = "https://aistylemate.ru/api/outfits_store.php"
 # REGRU_STORE_SECRET лучше хранить как secret в Cloudflare, не в vars
 
