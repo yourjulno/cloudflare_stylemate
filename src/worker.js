@@ -302,15 +302,22 @@ async function handleOutfitsStart(request, env, origin) {
   if (!env.OUTFIT_JOBS) return json({ ok: false, error: "OUTFIT_JOBS binding not set" }, 500, origin, env);
 
   const ct = request.headers.get("content-type") || "";
-  if (!ct.includes("multipart/form-data")) return json({ ok: false, error: "Ожидается multipart/form-data" }, 400, origin, env);
+  if (!ct.includes("multipart/form-data")) {
+    return json({ ok: false, error: "Ожидается multipart/form-data" }, 400, origin, env);
+  }
 
-  const form = await request.formData();
+  const form = await request.formData(); // <-- СНАЧАЛА formData
 
   const email = String(form.get("email") || "").trim();
   const event = String(form.get("event") || "").trim();
   const archetypeRaw = String(form.get("archetype") || "").trim();
+
   const full = form.get("full");
-  const face = form.get("face");
+  const face = form.get("face");         // <-- И face тоже отсюда
+
+  if (!isFileLike(full) || !isFileLike(face)) {
+    return json({ ok: false, error: "Нужно 2 файла: full и face" }, 400, origin, env);
+  }
 
   if (!isValidEmail(email)) return json({ ok: false, error: "Некорректный email" }, 400, origin, env);
   if (!event) return json({ ok: false, error: "Пустое мероприятие" }, 400, origin, env);
@@ -321,10 +328,6 @@ async function handleOutfitsStart(request, env, origin) {
   } catch {}
   if (!archetype || typeof archetype !== "object" || !archetype.type || !archetype.reason) {
     return json({ ok: false, error: "Некорректный archetype" }, 400, origin, env);
-  }
-
-  if (!isFileLike(full) || !isFileLike(face)) {
-    return json({ ok: false, error: "Нужно 2 файла: full и face", ...formDebug(form) }, 400, origin, env);
   }
 
   if (!(await sniffIsPng(full))) return json({ ok: false, error: "full должен быть PNG" }, 400, origin, env);
