@@ -18,4 +18,4 @@ bindings = [
 
 [[migrations]]
 tag = "v1"
-new_classes = ["OUTFIT_JOBS"]
+new_sqlite_classes = ["OUTFIT_JOBS"]
