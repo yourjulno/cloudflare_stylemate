@@ -449,7 +449,7 @@ export class OUTFIT_JOBS {
 
         await this.state.storage.put("job", { ...job, status: "saving", updatedAt: Date.now() });
 
-        const size = job.size || this.env.OUTFIT_SIZE || "1024x1024";
+        const size = job.size || this.env.OUTFIT_SIZE || "1024x1792";
         const count = Math.max(1, Math.min(2, Number(job.count) || 1));
 
         const edited = await callOpenAIImageEdit(this.env, fullBytes, faceBytes, prompt, size, count);
