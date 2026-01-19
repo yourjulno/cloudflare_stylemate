@@ -176,8 +176,8 @@ async function callOpenAIImageEdit(env, fullPngBytes, facePngBytes, prompt, size
   form.append("size", size);
   form.append("n", String(nn));
 
-  form.append("image", new Blob([fullPngBytes], { type: "image/png" }), "input.png");
-  form.append("image", new Blob([facePngBytes], { type: "image/png" }), "face.png");
+  form.append("image[]", new Blob([fullPngBytes], { type: "image/png" }), "input.png");
+  form.append("image[]", new Blob([facePngBytes], { type: "image/png" }), "face.png");
 
   const r = await fetch("https://api.openai.com/v1/images/edits", {
     method: "POST",
