@@ -1,6 +1,6 @@
 // FILE: src/worker.js
 
-const BUILD = "worker__2026-01-19__v4_do_r2";
+const BUILD = "worker__2026-01-19__v5_store_on_regru";
 
 function corsHeaders(origin, env) {
   const allow = env.ALLOWED_ORIGIN || "https://aistylemate.ru";
@@ -36,99 +36,8 @@ function isFileLike(v) {
   );
 }
 
-function describeFormValue(v) {
-  if (!v) return { kind: "nullish" };
-  if (typeof v === "string") return { kind: "string", preview: v.slice(0, 80) };
-  return {
-    kind: v?.constructor?.name || "object",
-    isFileLike: isFileLike(v),
-    isFile: typeof File !== "undefined" ? v instanceof File : false,
-    name: typeof v?.name === "string" ? v.name : undefined,
-    type: typeof v?.type === "string" ? v.type : undefined,
-    size: typeof v?.size === "number" ? v.size : undefined,
-  };
-}
-
-function formDebug(form) {
-  const received = {};
-  for (const [k, v] of form.entries()) received[k] = describeFormValue(v);
-  return {
-    receivedKeys: [...new Set([...form.keys()])],
-    received,
-  };
-}
-
 function isValidEmail(s) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || "").trim());
-}
-
-async function fileToDataUrl(file) {
-  const mime = file.type || "image/jpeg";
-  const ab = await file.arrayBuffer();
-  const bytes = new Uint8Array(ab);
-
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-  }
-  const b64 = btoa(binary);
-  return `data:${mime};base64,${b64}`;
-}
-
-function extractOutputText(data) {
-  let aiText = "";
-  if (data?.output && Array.isArray(data.output)) {
-    for (const out of data.output) {
-      if (!out?.content || !Array.isArray(out.content)) continue;
-      for (const c of out.content) {
-        if (c?.type === "output_text" && typeof c.text === "string") {
-          aiText += c.text + "\n";
-        }
-      }
-    }
-  }
-  if (typeof data?.output_text === "string") aiText = data.output_text;
-  return aiText.trim();
-}
-
-function tryParseJsonFromText(text) {
-  if (!text || typeof text !== "string") return null;
-  try {
-    const v = JSON.parse(text);
-    if (v && typeof v === "object") return v;
-  } catch {}
-
-  const m = text.match(/\{[\s\S]*\}/);
-  if (!m) return null;
-
-  try {
-    const v = JSON.parse(m[0]);
-    if (v && typeof v === "object") return v;
-  } catch {}
-
-  return null;
-}
-
-function normalizeArchetype(obj) {
-  if (!obj || typeof obj !== "object") return null;
-
-  const type = typeof obj.type === "string" ? obj.type.trim() : "";
-  const reason = typeof obj.reason === "string" ? obj.reason.trim() : "";
-
-  let bullets = [];
-  if (Array.isArray(obj.bullets)) {
-    bullets = obj.bullets
-      .filter((x) => typeof x === "string")
-      .map((x) => x.trim())
-      .filter(Boolean)
-      .slice(0, 4);
-  }
-
-  if (!type || !reason) return null;
-  while (bullets.length < 4) bullets.push("—");
-
-  return { type, reason, bullets };
 }
 
 function safeId() {
@@ -156,25 +65,98 @@ async function sniffIsPng(fileLike) {
   }
 }
 
-async function callOpenAIImageEdit(env, imageBytes, prompt, size) {
-  if (!env.OPENAI_API_KEY) {
-    return { ok: false, error: "OPENAI_API_KEY не задан" };
-  }
+async function fileToDataUrl(file) {
+  const mime = file.type || "image/jpeg";
+  const ab = await file.arrayBuffer();
+  const bytes = new Uint8Array(ab);
 
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  const b64 = btoa(binary);
+  return `data:${mime};base64,${b64}`;
+}
+
+function extractOutputText(data) {
+  let aiText = "";
+  if (data?.output && Array.isArray(data.output)) {
+    for (const out of data.output) {
+      if (!out?.content || !Array.isArray(out.content)) continue;
+      for (const c of out.content) {
+        if (c?.type === "output_text" && typeof c.text === "string") aiText += c.text + "\n";
+      }
+    }
+  }
+  if (typeof data?.output_text === "string") aiText = data.output_text;
+  return aiText.trim();
+}
+
+function tryParseJsonFromText(text) {
+  if (!text || typeof text !== "string") return null;
+  try {
+    const v = JSON.parse(text);
+    if (v && typeof v === "object") return v;
+  } catch {}
+  const m = text.match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  try {
+    const v = JSON.parse(m[0]);
+    if (v && typeof v === "object") return v;
+  } catch {}
+  return null;
+}
+
+function normalizeArchetype(obj) {
+  if (!obj || typeof obj !== "object") return null;
+  const type = typeof obj.type === "string" ? obj.type.trim() : "";
+  const reason = typeof obj.reason === "string" ? obj.reason.trim() : "";
+  let bullets = [];
+  if (Array.isArray(obj.bullets)) {
+    bullets = obj.bullets
+      .filter((x) => typeof x === "string")
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .slice(0, 4);
+  }
+  if (!type || !reason) return null;
+  while (bullets.length < 4) bullets.push("—");
+  return { type, reason, bullets };
+}
+
+async function callOpenAIResponses(env, payload) {
+  const r = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.OPENAI_API_KEY}` },
+    body: JSON.stringify(payload),
+  });
+
+  const raw = await r.text();
+  let data = null;
+  try {
+    data = JSON.parse(raw);
+  } catch {}
+
+  if (!r.ok) {
+    return { ok: false, error: "OpenAI error", debug: data || raw };
+  }
+  return { ok: true, data: data || {} };
+}
+
+async function callOpenAIImageEdit(env, imagePngBytes, prompt, size = "512x512") {
   const form = new FormData();
   form.append("model", env.IMAGE_MODEL || "gpt-image-1");
   form.append("prompt", prompt);
+  form.append("size", size);
   form.append("n", "1");
-  form.append("size", size || "512x512");
 
-  const blob = new Blob([imageBytes], { type: "image/png" });
+  const blob = new Blob([imagePngBytes], { type: "image/png" });
   form.append("image", blob, "input.png");
 
   const r = await fetch("https://api.openai.com/v1/images/edits", {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-    },
+    headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}` },
     body: form,
   });
 
@@ -190,13 +172,44 @@ async function callOpenAIImageEdit(env, imageBytes, prompt, size) {
 
   const b64 = data?.data?.[0]?.b64_json;
   if (typeof b64 !== "string" || !b64) {
-    return { ok: false, error: "OpenAI вернул пустую картинку", debug: data };
+    return { ok: false, error: "No b64_json", debug: data };
   }
 
   const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
   return { ok: true, pngBytes: bin };
 }
 
+async function uploadPngToReg(env, { job, slot, pngBytes }) {
+  const url = String(env.REGRU_STORE_URL || "").trim();
+  const secret = String(env.REGRU_STORE_SECRET || "").trim();
+  if (!url) throw new Error("REGRU_STORE_URL not set");
+  if (!secret) throw new Error("REGRU_STORE_SECRET not set");
+
+  const fd = new FormData();
+  fd.append("job", job);
+  fd.append("slot", slot);
+  fd.append("file", new Blob([pngBytes], { type: "image/png" }), `${slot}.png`);
+
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { "X-Worker-Secret": secret },
+    body: fd,
+  });
+
+  const raw = await r.text();
+  let data = null;
+  try {
+    data = JSON.parse(raw);
+  } catch {}
+
+  if (!r.ok || !data?.ok || !data?.url) {
+    throw new Error(`regru store failed: ${raw.slice(0, 300)}`);
+  }
+
+  return String(data.url);
+}
+
+// ===== /submit (анализ) =====
 async function handleSubmit(request, env, origin) {
   const ct = request.headers.get("content-type") || "";
   if (!ct.includes("multipart/form-data")) {
@@ -212,21 +225,11 @@ async function handleSubmit(request, env, origin) {
   const full = form.get("full");
 
   if (!isValidEmail(email)) return json({ ok: false, error: "Некорректный email" }, 400, origin, env);
-
-  if (!isFileLike(face) || !isFileLike(full)) {
-    return json(
-      { ok: false, error: "Нужно загрузить 2 фото: face и full", ...formDebug(form) },
-      400,
-      origin,
-      env
-    );
-  }
+  if (!isFileLike(face) || !isFileLike(full)) return json({ ok: false, error: "Нужно 2 фото: face и full" }, 400, origin, env);
 
   const maxMb = Number(env.MAX_FILE_MB || 4);
   const max = maxMb * 1024 * 1024;
-  if (face.size > max || full.size > max) {
-    return json({ ok: false, error: `Файл слишком большой (макс ${maxMb}MB)` }, 400, origin, env);
-  }
+  if (face.size > max || full.size > max) return json({ ok: false, error: `Файл слишком большой (макс ${maxMb}MB)` }, 400, origin, env);
 
   const faceUrl = await fileToDataUrl(face);
   const fullUrl = await fileToDataUrl(full);
@@ -240,62 +243,35 @@ async function handleSubmit(request, env, origin) {
     "- Объясни почему (1–2 предложения: черты, контраст, линии/силуэт).",
     "- Дай 4 коротких признака (2–5 слов каждый).",
     "",
-    "Верни СТРОГО JSON. Без пояснений, без Markdown, без кодовых блоков.",
+    "Верни СТРОГО JSON. Без пояснений, без Markdown.",
     'Формат: {"type":"...","reason":"...","bullets":["...","...","...","..."]}',
   ].join("\n");
 
   const payload = {
     model: env.DEFAULT_MODEL || "gpt-4.1-mini",
     input: [
-      {
-        role: "user",
-        content: [
-          { type: "input_text", text: prompt },
-          { type: "input_image", image_url: faceUrl },
-          { type: "input_image", image_url: fullUrl },
-        ],
-      },
+      { role: "user", content: [
+        { type: "input_text", text: prompt },
+        { type: "input_image", image_url: faceUrl },
+        { type: "input_image", image_url: fullUrl },
+      ]},
     ],
   };
 
-  const r = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify(payload),
-  });
+  const oa = await callOpenAIResponses(env, payload);
+  if (!oa.ok) return json({ ok: false, error: oa.error, debug: oa.debug }, 502, origin, env);
 
-  const raw = await r.text();
-  let data = null;
-  try {
-    data = JSON.parse(raw);
-  } catch {}
-
-  if (!r.ok) {
-    return json({ ok: false, error: "OpenAI error", debug: data || raw }, 502, origin, env);
-  }
-
-  const aiText = extractOutputText(data);
+  const aiText = extractOutputText(oa.data);
   const parsed = tryParseJsonFromText(aiText);
   const result = normalizeArchetype(parsed);
 
-  if (!result) {
-    return json(
-      { ok: false, error: "AI вернул невалидный JSON", aiTextPreview: (aiText || "").slice(0, 400) },
-      502,
-      origin,
-      env
-    );
-  }
-
-  return json({ ok: true, result, aiText }, 200, origin, env);
+  if (!result) return json({ ok: false, error: "AI вернул невалидный JSON", aiTextPreview: aiText.slice(0, 400) }, 502, origin, env);
+  return json({ ok: true, result }, 200, origin, env);
 }
 
+// ===== /outfits/start =====
 async function handleOutfitsStart(request, env, origin) {
-  if (!env.R2_OUTFITS) return json({ ok: false, error: "R2_OUTFITS не привязан (Bindings)" }, 500, origin, env);
-  if (!env.OUTFIT_JOBS) return json({ ok: false, error: "OUTFIT_JOBS не привязан (Bindings)" }, 500, origin, env);
+  if (!env.OUTFIT_JOBS) return json({ ok: false, error: "OUTFIT_JOBS binding not set" }, 500, origin, env);
 
   const ct = request.headers.get("content-type") || "";
   if (!ct.includes("multipart/form-data")) {
@@ -312,34 +288,23 @@ async function handleOutfitsStart(request, env, origin) {
   if (!event) return json({ ok: false, error: "Пустое мероприятие" }, 400, origin, env);
 
   let archetype = null;
-  try {
-    archetype = JSON.parse(archetypeRaw);
-  } catch {}
+  try { archetype = JSON.parse(archetypeRaw); } catch {}
   if (!archetype || typeof archetype !== "object" || !archetype.type || !archetype.reason) {
     return json({ ok: false, error: "Некорректный archetype" }, 400, origin, env);
   }
 
-  if (!isFileLike(full)) {
-    return json({ ok: false, error: "Нет файла full", ...formDebug(form) }, 400, origin, env);
-  }
+  if (!isFileLike(full)) return json({ ok: false, error: "Нет файла full" }, 400, origin, env);
 
-  const claimedType = (full.type || "").toLowerCase();
-  const looksPng = claimedType === "image/png" || claimedType === "application/octet-stream" || claimedType === "";
-  if (!looksPng || !(await sniffIsPng(full))) {
-    return json(
-      { ok: false, error: "Нужно PNG (квадрат) для генерации", gotType: full.type, ...formDebug(form) },
-      400,
-      origin,
-      env
-    );
-  }
+  const looksPng = (full.type || "").toLowerCase() === "image/png" || (full.type || "") === "application/octet-stream" || (full.type || "") === "";
+  if (!looksPng || !(await sniffIsPng(full))) return json({ ok: false, error: "Нужно PNG (квадрат) для генерации", gotType: full.type }, 400, origin, env);
 
   if (full.size > 4 * 1024 * 1024) return json({ ok: false, error: "PNG слишком большой (макс 4MB)" }, 400, origin, env);
 
   const job = safeId();
-  const inputKey = `jobs/${job}/input.png`;
 
-  await env.R2_OUTFITS.put(inputKey, await full.arrayBuffer(), { httpMetadata: { contentType: "image/png" } });
+  // сохраняем input.png на reg.ru
+  const inputBytes = new Uint8Array(await full.arrayBuffer());
+  const inputUrl = await uploadPngToReg(env, { job, slot: "input", pngBytes: inputBytes });
 
   const id = env.OUTFIT_JOBS.idFromName(job);
   const stub = env.OUTFIT_JOBS.get(id);
@@ -352,7 +317,7 @@ async function handleOutfitsStart(request, env, origin) {
       email,
       event,
       archetype,
-      inputKey,
+      inputUrl,
       size: env.OUTFIT_SIZE || "512x512",
     }),
   });
@@ -363,7 +328,7 @@ async function handleOutfitsStart(request, env, origin) {
 }
 
 async function handleOutfitsStatus(request, env, origin) {
-  if (!env.OUTFIT_JOBS) return json({ ok: false, error: "OUTFIT_JOBS не привязан (Bindings)" }, 500, origin, env);
+  if (!env.OUTFIT_JOBS) return json({ ok: false, error: "OUTFIT_JOBS binding not set" }, 500, origin, env);
 
   const url = new URL(request.url);
   const job = String(url.searchParams.get("job") || "").trim();
@@ -379,23 +344,7 @@ async function handleOutfitsStatus(request, env, origin) {
   return json(data, 200, origin, env);
 }
 
-async function handleOutfitsFile(request, env) {
-  if (!env.R2_OUTFITS) return new Response("R2 not configured", { status: 500 });
-
-  const url = new URL(request.url);
-  const key = decodeURIComponent(url.pathname.replace("/outfits/file/", ""));
-  if (!key) return new Response("Not found", { status: 404 });
-
-  const obj = await env.R2_OUTFITS.get(key);
-  if (!obj) return new Response("Not found", { status: 404 });
-
-  const headers = new Headers();
-  obj.writeHttpMetadata(headers);
-  headers.set("Cache-Control", "public, max-age=31536000, immutable");
-  return new Response(obj.body, { status: 200, headers });
-}
-
-// ✅ ВОТ ЭТОГО КЛАССА ТЕБЕ НЕ ХВАТАЛО (он должен быть экспортирован!)
+// ===== Durable Object =====
 export class OUTFIT_JOBS {
   constructor(state, env) {
     this.state = state;
@@ -407,14 +356,14 @@ export class OUTFIT_JOBS {
 
     if (url.pathname === "/init" && request.method === "POST") {
       const body = await request.json().catch(() => null);
-      if (!body?.job || !body?.inputKey) return new Response("Bad init", { status: 400 });
+      if (!body?.job || !body?.inputUrl) return new Response("Bad init", { status: 400 });
 
       await this.state.storage.put("job", {
         job: String(body.job),
         email: String(body.email || ""),
         event: String(body.event || ""),
         archetype: body.archetype || {},
-        inputKey: String(body.inputKey),
+        inputUrl: String(body.inputUrl),
         size: String(body.size || "512x512"),
         status: "queued",
         images: [],
@@ -428,18 +377,14 @@ export class OUTFIT_JOBS {
     if (url.pathname === "/run" && request.method === "POST") {
       const job = await this.state.storage.get("job");
       if (!job) return new Response("No job", { status: 404 });
-
-      if (job.status === "running" || job.status === "saving" || job.status === "done") {
-        return new Response("ok");
-      }
+      if (job.status === "running" || job.status === "saving" || job.status === "done") return new Response("ok");
 
       await this.state.storage.put("job", { ...job, status: "running", updatedAt: Date.now() });
 
       try {
-        const inputObj = await this.env.R2_OUTFITS.get(job.inputKey);
-        if (!inputObj) throw new Error("input missing in R2");
-
-        const inputBytes = new Uint8Array(await inputObj.arrayBuffer());
+        const imgResp = await fetch(job.inputUrl);
+        if (!imgResp.ok) throw new Error("Cannot fetch inputUrl");
+        const inputBytes = new Uint8Array(await imgResp.arrayBuffer());
 
         const prompt = [
           "Сгенерируй стильный образ для этого человека на основе исходного фото.",
@@ -458,13 +403,12 @@ export class OUTFIT_JOBS {
         const edited = await callOpenAIImageEdit(this.env, inputBytes, prompt, job.size);
         if (!edited.ok) throw new Error(String(edited.error || "image edit failed"));
 
-        const outKey = `jobs/${job.job}/out_1.png`;
-        await this.env.R2_OUTFITS.put(outKey, edited.pngBytes, { httpMetadata: { contentType: "image/png" } });
+        const outUrl = await uploadPngToReg(this.env, { job: job.job, slot: "out_1", pngBytes: edited.pngBytes });
 
         await this.state.storage.put("job", {
           ...job,
           status: "done",
-          images: [outKey],
+          images: [outUrl],
           error: "",
           updatedAt: Date.now(),
         });
@@ -511,19 +455,9 @@ export default {
     }
 
     try {
-      if (url.pathname === "/submit" && request.method === "POST") {
-        return await handleSubmit(request, env, origin);
-      }
-
-      if (url.pathname === "/outfits/start" && request.method === "POST") {
-        return await handleOutfitsStart(request, env, origin);
-      }
-      if (url.pathname === "/outfits/status" && request.method === "GET") {
-        return await handleOutfitsStatus(request, env, origin);
-      }
-      if (url.pathname.startsWith("/outfits/file/") && request.method === "GET") {
-        return await handleOutfitsFile(request, env);
-      }
+      if (url.pathname === "/submit" && request.method === "POST") return await handleSubmit(request, env, origin);
+      if (url.pathname === "/outfits/start" && request.method === "POST") return await handleOutfitsStart(request, env, origin);
+      if (url.pathname === "/outfits/status" && request.method === "GET") return await handleOutfitsStatus(request, env, origin);
 
       return json({ ok: false, error: "Not Found" }, 404, origin, env);
     } catch (e) {
@@ -531,4 +465,3 @@ export default {
     }
   },
 };
-
