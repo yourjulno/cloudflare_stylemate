@@ -327,7 +327,7 @@ async function handleOutfitsStart(request, env, origin) {
       event,
       archetype,
       inputUrl,
-      size: env.OUTFIT_SIZE || "512x512",
+      size: env.OUTFIT_SIZE || "1024x1024",
     }),
   });
 
@@ -409,7 +409,7 @@ export class OUTFIT_JOBS {
 
         await this.state.storage.put("job", { ...job, status: "saving", updatedAt: Date.now() });
 
-        const edited = await callOpenAIImageEdit(this.env, inputBytes, prompt, job.size);
+        const edited = await callOpenAIImageEdit(this.env, inputBytes, prompt, size = "1024x1024");
         if (!edited.ok) throw new Error(String(edited.error || "image edit failed"));
 
         const outUrl = await uploadPngToReg(this.env, { job: job.job, slot: "out_1", pngBytes: edited.pngBytes });
