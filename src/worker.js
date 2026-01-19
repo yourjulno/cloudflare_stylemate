@@ -1,6 +1,6 @@
 // FILE: src/worker.js
 
-const BUILD = "worker__2026-01-19__v5_store_on_regru";
+const BUILD = "worker__2026-01-19__v6_store_on_regru__2_outfits__face_ref";
 
 function corsHeaders(origin, env) {
   const allow = env.ALLOWED_ORIGIN || "https://aistylemate.ru";
@@ -34,6 +34,25 @@ function isFileLike(v) {
     typeof v.size === "number" &&
     typeof v.type === "string"
   );
+}
+
+function describeFormValue(v) {
+  if (!v) return { kind: "nullish" };
+  if (typeof v === "string") return { kind: "string", preview: v.slice(0, 80) };
+  return {
+    kind: v?.constructor?.name || "object",
+    isFileLike: isFileLike(v),
+    isFile: typeof File !== "undefined" ? v instanceof File : false,
+    name: typeof v?.name === "string" ? v.name : undefined,
+    type: typeof v?.type === "string" ? v.type : undefined,
+    size: typeof v?.size === "number" ? v.size : undefined,
+  };
+}
+
+function formDebug(form) {
+  const received = {};
+  for (const [k, v] of form.entries()) received[k] = describeFormValue(v);
+  return { receivedKeys: [...new Set([...form.keys()])], received };
 }
 
 function isValidEmail(s) {
@@ -138,21 +157,27 @@ async function callOpenAIResponses(env, payload) {
     data = JSON.parse(raw);
   } catch {}
 
-  if (!r.ok) {
-    return { ok: false, error: "OpenAI error", debug: data || raw };
-  }
+  if (!r.ok) return { ok: false, error: "OpenAI error", debug: data || raw };
   return { ok: true, data: data || {} };
 }
 
-async function callOpenAIImageEdit(env, imagePngBytes, prompt, size) {
+/**
+ * Multi-image edit:
+ * - image #1: full body (base)
+ * - image #2: face reference
+ * - returns n images (b64_json)
+ */
+async function callOpenAIImageEdit(env, fullPngBytes, facePngBytes, prompt, size = "1024x1024", n = 1) {
+  const nn = Math.max(1, Math.min(4, Number(n) || 1));
+
   const form = new FormData();
   form.append("model", env.IMAGE_MODEL || "gpt-image-1");
   form.append("prompt", prompt);
   form.append("size", size);
-  form.append("n", "1");
+  form.append("n", String(nn));
 
-  const blob = new Blob([imagePngBytes], { type: "image/png" });
-  form.append("image", blob, "input.png");
+  form.append("image", new Blob([fullPngBytes], { type: "image/png" }), "input.png");
+  form.append("image", new Blob([facePngBytes], { type: "image/png" }), "face.png");
 
   const r = await fetch("https://api.openai.com/v1/images/edits", {
     method: "POST",
@@ -167,25 +192,20 @@ async function callOpenAIImageEdit(env, imagePngBytes, prompt, size) {
   } catch {}
 
   if (!r.ok) {
-    const msg =
-      (data && data.error && data.error.message) ||
-      `HTTP ${r.status}`;
-
-    return {
-      ok: false,
-      error: msg,
-      debug: data || raw,
-      status: r.status,
-    };
+    const msg = (data && data.error && data.error.message) || `HTTP ${r.status}`;
+    return { ok: false, error: msg, debug: data || raw, status: r.status };
   }
 
-  const b64 = data?.data?.[0]?.b64_json;
-  if (typeof b64 !== "string" || !b64) {
-    return { ok: false, error: "No b64_json", debug: data };
+  const items = Array.isArray(data?.data) ? data.data : [];
+  const pngBytesList = [];
+  for (const it of items) {
+    const b64 = it?.b64_json;
+    if (typeof b64 !== "string" || !b64) continue;
+    pngBytesList.push(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
   }
 
-  const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-  return { ok: true, pngBytes: bin };
+  if (!pngBytesList.length) return { ok: false, error: "No b64_json", debug: data };
+  return { ok: true, pngBytesList };
 }
 
 async function uploadPngToReg(env, { job, slot, pngBytes }) {
@@ -221,12 +241,8 @@ async function uploadPngToReg(env, { job, slot, pngBytes }) {
 // ===== /submit (анализ) =====
 async function handleSubmit(request, env, origin) {
   const ct = request.headers.get("content-type") || "";
-  if (!ct.includes("multipart/form-data")) {
-    return json({ ok: false, error: "Ожидается multipart/form-data" }, 400, origin, env);
-  }
-  if (!env.OPENAI_API_KEY) {
-    return json({ ok: false, error: "OPENAI_API_KEY не задан" }, 500, origin, env);
-  }
+  if (!ct.includes("multipart/form-data")) return json({ ok: false, error: "Ожидается multipart/form-data" }, 400, origin, env);
+  if (!env.OPENAI_API_KEY) return json({ ok: false, error: "OPENAI_API_KEY не задан" }, 500, origin, env);
 
   const form = await request.formData();
   const email = String(form.get("email") || "").trim();
@@ -259,11 +275,14 @@ async function handleSubmit(request, env, origin) {
   const payload = {
     model: env.DEFAULT_MODEL || "gpt-4.1-mini",
     input: [
-      { role: "user", content: [
-        { type: "input_text", text: prompt },
-        { type: "input_image", image_url: faceUrl },
-        { type: "input_image", image_url: fullUrl },
-      ]},
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: prompt },
+          { type: "input_image", image_url: faceUrl },
+          { type: "input_image", image_url: fullUrl },
+        ],
+      },
     ],
   };
 
@@ -283,37 +302,45 @@ async function handleOutfitsStart(request, env, origin) {
   if (!env.OUTFIT_JOBS) return json({ ok: false, error: "OUTFIT_JOBS binding not set" }, 500, origin, env);
 
   const ct = request.headers.get("content-type") || "";
-  if (!ct.includes("multipart/form-data")) {
-    return json({ ok: false, error: "Ожидается multipart/form-data" }, 400, origin, env);
-  }
+  if (!ct.includes("multipart/form-data")) return json({ ok: false, error: "Ожидается multipart/form-data" }, 400, origin, env);
 
   const form = await request.formData();
+
   const email = String(form.get("email") || "").trim();
   const event = String(form.get("event") || "").trim();
   const archetypeRaw = String(form.get("archetype") || "").trim();
   const full = form.get("full");
+  const face = form.get("face");
 
   if (!isValidEmail(email)) return json({ ok: false, error: "Некорректный email" }, 400, origin, env);
   if (!event) return json({ ok: false, error: "Пустое мероприятие" }, 400, origin, env);
 
   let archetype = null;
-  try { archetype = JSON.parse(archetypeRaw); } catch {}
+  try {
+    archetype = JSON.parse(archetypeRaw);
+  } catch {}
   if (!archetype || typeof archetype !== "object" || !archetype.type || !archetype.reason) {
     return json({ ok: false, error: "Некорректный archetype" }, 400, origin, env);
   }
 
-  if (!isFileLike(full)) return json({ ok: false, error: "Нет файла full" }, 400, origin, env);
+  if (!isFileLike(full) || !isFileLike(face)) {
+    return json({ ok: false, error: "Нужно 2 файла: full и face", ...formDebug(form) }, 400, origin, env);
+  }
 
-  const looksPng = (full.type || "").toLowerCase() === "image/png" || (full.type || "") === "application/octet-stream" || (full.type || "") === "";
-  if (!looksPng || !(await sniffIsPng(full))) return json({ ok: false, error: "Нужно PNG (квадрат) для генерации", gotType: full.type }, 400, origin, env);
+  if (!(await sniffIsPng(full))) return json({ ok: false, error: "full должен быть PNG" }, 400, origin, env);
+  if (!(await sniffIsPng(face))) return json({ ok: false, error: "face должен быть PNG" }, 400, origin, env);
 
-  if (full.size > 4 * 1024 * 1024) return json({ ok: false, error: "PNG слишком большой (макс 4MB)" }, 400, origin, env);
+  const max = 4 * 1024 * 1024;
+  if (full.size > max) return json({ ok: false, error: "full PNG слишком большой (макс 4MB)" }, 400, origin, env);
+  if (face.size > max) return json({ ok: false, error: "face PNG слишком большой (макс 4MB)" }, 400, origin, env);
 
   const job = safeId();
 
-  // сохраняем input.png на reg.ru
-  const inputBytes = new Uint8Array(await full.arrayBuffer());
-  const inputUrl = await uploadPngToReg(env, { job, slot: "input", pngBytes: inputBytes });
+  const fullBytes = new Uint8Array(await full.arrayBuffer());
+  const faceBytes = new Uint8Array(await face.arrayBuffer());
+
+  const inputUrl = await uploadPngToReg(env, { job, slot: "input", pngBytes: fullBytes });
+  const faceUrl = await uploadPngToReg(env, { job, slot: "face", pngBytes: faceBytes });
 
   const id = env.OUTFIT_JOBS.idFromName(job);
   const stub = env.OUTFIT_JOBS.get(id);
@@ -327,7 +354,9 @@ async function handleOutfitsStart(request, env, origin) {
       event,
       archetype,
       inputUrl,
+      faceUrl,
       size: env.OUTFIT_SIZE || "1024x1024",
+      count: 1,
     }),
   });
 
@@ -365,7 +394,7 @@ export class OUTFIT_JOBS {
 
     if (url.pathname === "/init" && request.method === "POST") {
       const body = await request.json().catch(() => null);
-      if (!body?.job || !body?.inputUrl) return new Response("Bad init", { status: 400 });
+      if (!body?.job || !body?.inputUrl || !body?.faceUrl) return new Response("Bad init", { status: 400 });
 
       await this.state.storage.put("job", {
         job: String(body.job),
@@ -373,7 +402,9 @@ export class OUTFIT_JOBS {
         event: String(body.event || ""),
         archetype: body.archetype || {},
         inputUrl: String(body.inputUrl),
-        size: String(body.size || "512x512"),
+        faceUrl: String(body.faceUrl),
+        size: String(body.size || "1024x1024"),
+        count: Math.max(1, Math.min(2, Number(body.count) || 1)),
         status: "queued",
         images: [],
         error: "",
@@ -391,36 +422,49 @@ export class OUTFIT_JOBS {
       await this.state.storage.put("job", { ...job, status: "running", updatedAt: Date.now() });
 
       try {
-        const imgResp = await fetch(job.inputUrl);
-        if (!imgResp.ok) throw new Error("Cannot fetch inputUrl");
-        const inputBytes = new Uint8Array(await imgResp.arrayBuffer());
+        const fullResp = await fetch(job.inputUrl);
+        if (!fullResp.ok) throw new Error("Cannot fetch inputUrl");
+        const fullBytes = new Uint8Array(await fullResp.arrayBuffer());
+
+        const faceResp = await fetch(job.faceUrl);
+        if (!faceResp.ok) throw new Error("Cannot fetch faceUrl");
+        const faceBytes = new Uint8Array(await faceResp.arrayBuffer());
 
         const prompt = [
-          "Сгенерируй стильный образ для этого человека на основе исходного фото.",
-          "Сделай максимально похожим на человека с фото. Сгенерируй картинку в полный рост.",
+          "Сгенерируй стильный образ в полный рост для этого человека на основе полного фото.",
           `Мероприятие: ${job.event}.`,
           `Типаж: ${job.archetype?.type || ""}.`,
           `Почему: ${job.archetype?.reason || ""}.`,
           "",
-          "Требования:",
-          "- Сохрани лицо, внешность и телосложение максимально. ", 
-          " -Возьми лицо в качестве референса, его не переделывай.",
-          "- Измени только одежду/аксессуары под мероприятие.",
+          "ВАЖНО: второе изображение — референс лица. Используй его в ПЕРВУЮ ОЧЕРЕДЬ.",
+          "- Сохрани идентичность лица максимально: черты, форма глаз/носа/губ, тон кожи.",
+          "- Не меняй возраст, национальность, пол, не 'улучшай' лицо.",
+          "- Сохрани телосложение максимально.",
+          "- Меняй одежду/обувь/аксессуары под мероприятие.",
           "- Фотореализм, хороший свет, без текста и логотипов.",
         ].join("\n");
 
         await this.state.storage.put("job", { ...job, status: "saving", updatedAt: Date.now() });
 
         const size = job.size || this.env.OUTFIT_SIZE || "1024x1024";
-        const edited = await callOpenAIImageEdit(this.env, inputBytes, prompt, size);
-        if (!edited.ok) throw new Error(String(edited.error || "image edit failed"));
+        const count = Math.max(1, Math.min(2, Number(job.count) || 1));
 
-        const outUrl = await uploadPngToReg(this.env, { job: job.job, slot: "out_1", pngBytes: edited.pngBytes });
+        const edited = await callOpenAIImageEdit(this.env, fullBytes, faceBytes, prompt, size, count);
+        if (!edited.ok) throw new Error(String(edited.error || "OpenAI image edit error"));
+
+        const list = edited.pngBytesList.slice(0, count);
+        const urls = [];
+
+        for (let i = 0; i < list.length; i += 1) {
+          const slot = `out_${i + 1}`; // out_1, out_2
+          const outUrl = await uploadPngToReg(this.env, { job: job.job, slot, pngBytes: list[i] });
+          urls.push(outUrl);
+        }
 
         await this.state.storage.put("job", {
           ...job,
           status: "done",
-          images: [outUrl],
+          images: urls,
           error: "",
           updatedAt: Date.now(),
         });
