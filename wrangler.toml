@@ -1,0 +1,13 @@
+name = "stylemate"
+main = "src/worker.js"
+compatibility_date = "2026-01-19"
+
+[vars]
+ALLOWED_ORIGIN = "https://aistylemate.ru"
+DEFAULT_MODEL = "gpt-4.1-mini"
+MAX_FILE_MB = "4"
+OUTFIT_SIZE = "512x512"
+
+[[r2_buckets]]
+binding = "R2_OUTFITS"
+bucket_name = "stylemate-outfits"
