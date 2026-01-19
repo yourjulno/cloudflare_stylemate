@@ -167,7 +167,16 @@ async function callOpenAIImageEdit(env, imagePngBytes, prompt, size = "512x512")
   } catch {}
 
   if (!r.ok) {
-    return { ok: false, error: "OpenAI image edit error", debug: data || raw };
+    const msg =
+      (data && data.error && data.error.message) ||
+      `HTTP ${r.status}`;
+
+    return {
+      ok: false,
+      error: msg,
+      debug: data || raw,
+      status: r.status,
+    };
   }
 
   const b64 = data?.data?.[0]?.b64_json;
