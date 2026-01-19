@@ -144,7 +144,7 @@ async function callOpenAIResponses(env, payload) {
   return { ok: true, data: data || {} };
 }
 
-async function callOpenAIImageEdit(env, imagePngBytes, prompt, size = "512x512") {
+async function callOpenAIImageEdit(env, imagePngBytes, prompt, size) {
   const form = new FormData();
   form.append("model", env.IMAGE_MODEL || "gpt-image-1");
   form.append("prompt", prompt);
@@ -409,7 +409,8 @@ export class OUTFIT_JOBS {
 
         await this.state.storage.put("job", { ...job, status: "saving", updatedAt: Date.now() });
 
-        const edited = await callOpenAIImageEdit(this.env, inputBytes, prompt, size = "1024x1024");
+        const size = job.size || this.env.OUTFIT_SIZE || "1024x1024";
+        const edited = await callOpenAIImageEdit(this.env, inputBytes, prompt, size);
         if (!edited.ok) throw new Error(String(edited.error || "image edit failed"));
 
         const outUrl = await uploadPngToReg(this.env, { job: job.job, slot: "out_1", pngBytes: edited.pngBytes });
