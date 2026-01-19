@@ -1,6 +1,6 @@
 // FILE: src/worker.js
 
-const BUILD = "worker__2026-01-19__v4";
+const BUILD = "worker__2026-01-19__v4_do_r2";
 
 function corsHeaders(origin, env) {
   const allow = env.ALLOWED_ORIGIN || "https://aistylemate.ru";
@@ -9,7 +9,7 @@ function corsHeaders(origin, env) {
   return {
     "Access-Control-Allow-Origin": allowOrigin,
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Proxy-Secret",
     "Access-Control-Max-Age": "86400",
   };
 }
@@ -141,7 +141,6 @@ async function sniffIsPng(fileLike) {
     const ab = await fileLike.arrayBuffer();
     const b = new Uint8Array(ab);
     if (b.length < 8) return false;
-    // PNG signature: 89 50 4E 47 0D 0A 1A 0A
     return (
       b[0] === 0x89 &&
       b[1] === 0x50 &&
@@ -155,6 +154,47 @@ async function sniffIsPng(fileLike) {
   } catch {
     return false;
   }
+}
+
+async function callOpenAIImageEdit(env, imageBytes, prompt, size) {
+  if (!env.OPENAI_API_KEY) {
+    return { ok: false, error: "OPENAI_API_KEY не задан" };
+  }
+
+  const form = new FormData();
+  form.append("model", env.IMAGE_MODEL || "gpt-image-1");
+  form.append("prompt", prompt);
+  form.append("n", "1");
+  form.append("size", size || "512x512");
+
+  const blob = new Blob([imageBytes], { type: "image/png" });
+  form.append("image", blob, "input.png");
+
+  const r = await fetch("https://api.openai.com/v1/images/edits", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+    },
+    body: form,
+  });
+
+  const raw = await r.text();
+  let data = null;
+  try {
+    data = JSON.parse(raw);
+  } catch {}
+
+  if (!r.ok) {
+    return { ok: false, error: "OpenAI image edit error", debug: data || raw };
+  }
+
+  const b64 = data?.data?.[0]?.b64_json;
+  if (typeof b64 !== "string" || !b64) {
+    return { ok: false, error: "OpenAI вернул пустую картинку", debug: data };
+  }
+
+  const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  return { ok: true, pngBytes: bin };
 }
 
 async function handleSubmit(request, env, origin) {
@@ -254,6 +294,9 @@ async function handleSubmit(request, env, origin) {
 }
 
 async function handleOutfitsStart(request, env, origin) {
+  if (!env.R2_OUTFITS) return json({ ok: false, error: "R2_OUTFITS не привязан (Bindings)" }, 500, origin, env);
+  if (!env.OUTFIT_JOBS) return json({ ok: false, error: "OUTFIT_JOBS не привязан (Bindings)" }, 500, origin, env);
+
   const ct = request.headers.get("content-type") || "";
   if (!ct.includes("multipart/form-data")) {
     return json({ ok: false, error: "Ожидается multipart/form-data" }, 400, origin, env);
@@ -320,6 +363,8 @@ async function handleOutfitsStart(request, env, origin) {
 }
 
 async function handleOutfitsStatus(request, env, origin) {
+  if (!env.OUTFIT_JOBS) return json({ ok: false, error: "OUTFIT_JOBS не привязан (Bindings)" }, 500, origin, env);
+
   const url = new URL(request.url);
   const job = String(url.searchParams.get("job") || "").trim();
   if (!/^[a-f0-9]{24}$/.test(job)) return json({ ok: false, error: "Bad job" }, 400, origin, env);
@@ -335,6 +380,8 @@ async function handleOutfitsStatus(request, env, origin) {
 }
 
 async function handleOutfitsFile(request, env) {
+  if (!env.R2_OUTFITS) return new Response("R2 not configured", { status: 500 });
+
   const url = new URL(request.url);
   const key = decodeURIComponent(url.pathname.replace("/outfits/file/", ""));
   if (!key) return new Response("Not found", { status: 404 });
@@ -346,6 +393,112 @@ async function handleOutfitsFile(request, env) {
   obj.writeHttpMetadata(headers);
   headers.set("Cache-Control", "public, max-age=31536000, immutable");
   return new Response(obj.body, { status: 200, headers });
+}
+
+// ✅ ВОТ ЭТОГО КЛАССА ТЕБЕ НЕ ХВАТАЛО (он должен быть экспортирован!)
+export class OUTFIT_JOBS {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+
+    if (url.pathname === "/init" && request.method === "POST") {
+      const body = await request.json().catch(() => null);
+      if (!body?.job || !body?.inputKey) return new Response("Bad init", { status: 400 });
+
+      await this.state.storage.put("job", {
+        job: String(body.job),
+        email: String(body.email || ""),
+        event: String(body.event || ""),
+        archetype: body.archetype || {},
+        inputKey: String(body.inputKey),
+        size: String(body.size || "512x512"),
+        status: "queued",
+        images: [],
+        error: "",
+        updatedAt: Date.now(),
+      });
+
+      return new Response("ok");
+    }
+
+    if (url.pathname === "/run" && request.method === "POST") {
+      const job = await this.state.storage.get("job");
+      if (!job) return new Response("No job", { status: 404 });
+
+      if (job.status === "running" || job.status === "saving" || job.status === "done") {
+        return new Response("ok");
+      }
+
+      await this.state.storage.put("job", { ...job, status: "running", updatedAt: Date.now() });
+
+      try {
+        const inputObj = await this.env.R2_OUTFITS.get(job.inputKey);
+        if (!inputObj) throw new Error("input missing in R2");
+
+        const inputBytes = new Uint8Array(await inputObj.arrayBuffer());
+
+        const prompt = [
+          "Сгенерируй стильный образ для этого человека на основе исходного фото.",
+          `Мероприятие: ${job.event}.`,
+          `Типаж: ${job.archetype?.type || ""}.`,
+          `Почему: ${job.archetype?.reason || ""}.`,
+          "",
+          "Требования:",
+          "- Сохрани лицо, внешность и телосложение максимально.",
+          "- Измени только одежду/аксессуары под мероприятие.",
+          "- Фотореализм, хороший свет, без текста и логотипов.",
+        ].join("\n");
+
+        await this.state.storage.put("job", { ...job, status: "saving", updatedAt: Date.now() });
+
+        const edited = await callOpenAIImageEdit(this.env, inputBytes, prompt, job.size);
+        if (!edited.ok) throw new Error(String(edited.error || "image edit failed"));
+
+        const outKey = `jobs/${job.job}/out_1.png`;
+        await this.env.R2_OUTFITS.put(outKey, edited.pngBytes, { httpMetadata: { contentType: "image/png" } });
+
+        await this.state.storage.put("job", {
+          ...job,
+          status: "done",
+          images: [outKey],
+          error: "",
+          updatedAt: Date.now(),
+        });
+
+        return new Response("ok");
+      } catch (e) {
+        const msg = String(e?.message || e).slice(0, 2000);
+        await this.state.storage.put("job", { ...job, status: "error", error: msg, updatedAt: Date.now() });
+        return new Response("ok");
+      }
+    }
+
+    if (url.pathname === "/status" && request.method === "GET") {
+      const job = await this.state.storage.get("job");
+      if (!job) {
+        return new Response(JSON.stringify({ ok: false, error: "Not found" }), {
+          status: 404,
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+        });
+      }
+
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          status: job.status,
+          error: job.status === "error" ? job.error : null,
+          images: job.status === "done" ? job.images : [],
+        }),
+        { headers: { "Content-Type": "application/json; charset=utf-8" } }
+      );
+    }
+
+    return new Response("Not Found", { status: 404 });
+  }
 }
 
 export default {
