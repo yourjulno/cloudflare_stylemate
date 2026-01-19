@@ -11,3 +11,12 @@ OUTFIT_SIZE = "512x512"
 [[r2_buckets]]
 binding = "R2_OUTFITS"
 bucket_name = "stylemate-outfits"
+
+[durable_objects]
+bindings = [
+  { name = "OUTFIT_JOBS", class_name = "OUTFIT_JOBS" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["OUTFIT_JOBS"]
