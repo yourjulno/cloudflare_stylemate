@@ -4,7 +4,7 @@ compatibility_date = "2026-01-19"
 
 [vars]
 ALLOWED_ORIGIN = "https://aistylemate.ru"
-DEFAULT_MODEL = "gpt-4.1-mini"
+DEFAULT_MODEL = "gpt_image_latest"
 MAX_FILE_MB = "4"
 OUTFIT_SIZE = "1024x1024"
 IMAGE_MODEL = "gpt-image-1"
