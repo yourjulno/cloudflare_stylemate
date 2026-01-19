@@ -406,7 +406,7 @@ export class OUTFIT_JOBS {
         archetype: body.archetype || {},
         inputUrl: String(body.inputUrl),
         faceUrl: String(body.faceUrl),
-        size: String(body.size || "1024x1024"),
+        size: String(body.size || "1024x1536"),
         count: Math.max(1, Math.min(2, Number(body.count) || 1)),
         status: "queued",
         images: [],
@@ -449,7 +449,7 @@ export class OUTFIT_JOBS {
 
         await this.state.storage.put("job", { ...job, status: "saving", updatedAt: Date.now() });
 
-        const size = job.size || this.env.OUTFIT_SIZE || "1024x1792";
+        const size = job.size || this.env.OUTFIT_SIZE || "1024x1536";
         const count = Math.max(1, Math.min(2, Number(job.count) || 1));
 
         const edited = await callOpenAIImageEdit(this.env, fullBytes, faceBytes, prompt, size, count);
